@@ -1,123 +1,113 @@
+const axios = require("axios");
 const { logEvent } = require("../utils/auditLogger");
-
-/**
- * Route Service
- *
- * In a production system this would integrate with a mapping API
- * (Google Maps Routes API, HERE, or OpenStreetMap/OSRM).
- *
- * This implementation:
- *  - Builds a weighted graph from intersection/signal data
- *  - Runs Dijkstra's algorithm to find the shortest path
- *  - Extracts ordered signal sequence with per-signal ETA
- *
- * The graph nodes represent named intersections/signals.
- * The graph edges represent road segments with travel time (weight in minutes).
- */
+const { OSRM_BASE_URL, AMBULANCE_AVG_SPEED_KMH } = require("../config/constants");
+const { haversineDistance } = require("./hospitalService");
 
 // ---------------------------------------------------------------------------
-// Dijkstra's Algorithm
+// OSRM Routing (free, no API key required)
+// Falls back to straight-line if OSRM is unreachable
 // ---------------------------------------------------------------------------
 
-/**
- * @param {Object} graph  - Adjacency list: { nodeId: [{ to, weight }] }
- * @param {string} start  - Start node ID
- * @param {string} end    - End node ID
- * @returns {{ path: string[], totalTime: number }}
- */
-function dijkstra(graph, start, end) {
-  const dist = {};
-  const prev = {};
-  const visited = new Set();
-  const queue = new Map(); // node → tentative distance
+async function getOSRMRoute(fromLat, fromLng, toLat, toLng) {
+  try {
+    const url = `${OSRM_BASE_URL}/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson&steps=true&annotations=false`;
 
-  Object.keys(graph).forEach((node) => {
-    dist[node] = Infinity;
-    prev[node] = null;
-  });
-  dist[start] = 0;
-  queue.set(start, 0);
+    const resp = await axios.get(url, { timeout: 8000 });
 
-  while (queue.size > 0) {
-    // Pick node with minimum distance
-    let u = null;
-    let minDist = Infinity;
-    for (const [node, d] of queue) {
-      if (d < minDist) {
-        minDist = d;
-        u = node;
-      }
+    if (resp.data?.code !== "Ok" || !resp.data?.routes?.length) {
+      throw new Error("OSRM: No route found");
     }
-    queue.delete(u);
 
-    if (!u || u === end) break;
-    if (visited.has(u)) continue;
-    visited.add(u);
+    const route = resp.data.routes[0];
+    return {
+      distanceKm: parseFloat((route.distance / 1000).toFixed(2)),
+      durationMinutes: parseFloat((route.duration / 60).toFixed(2)),
+      // GeoJSON coordinates [[lng, lat], ...]
+      polylineCoords: route.geometry.coordinates,
+      steps: extractNavigationSteps(route.legs?.[0]?.steps || []),
+    };
+  } catch (err) {
+    logEvent("ROUTE_SERVICE", `OSRM failed (${err.message}) — using straight-line fallback`);
+    return straightLineFallback(fromLat, fromLng, toLat, toLng);
+  }
+}
 
-    for (const { to, weight } of graph[u] || []) {
-      if (visited.has(to)) continue;
-      const alt = dist[u] + weight;
-      if (alt < dist[to]) {
-        dist[to] = alt;
-        prev[to] = u;
-        queue.set(to, alt);
-      }
-    }
+function straightLineFallback(fromLat, fromLng, toLat, toLng) {
+  const distanceKm = haversineDistance(fromLat, fromLng, toLat, toLng);
+  // Assume city routing is ~1.4x straight line
+  const roadDistanceKm = parseFloat((distanceKm * 1.4).toFixed(2));
+  const durationMinutes = parseFloat(((roadDistanceKm / AMBULANCE_AVG_SPEED_KMH) * 60).toFixed(2));
+
+  // Simple interpolated polyline (5 waypoints)
+  const coords = [];
+  for (let i = 0; i <= 4; i++) {
+    const t = i / 4;
+    coords.push([
+      parseFloat((fromLng + (toLng - fromLng) * t).toFixed(6)),
+      parseFloat((fromLat + (toLat - fromLat) * t).toFixed(6)),
+    ]);
   }
 
-  // Reconstruct path
-  const path = [];
-  let cur = end;
-  while (cur) {
-    path.unshift(cur);
-    cur = prev[cur];
-  }
+  return {
+    distanceKm: roadDistanceKm,
+    durationMinutes,
+    polylineCoords: coords,
+    steps: [
+      `Head toward destination (${roadDistanceKm.toFixed(1)} km)`,
+      `Arrive at destination`,
+    ],
+  };
+}
 
-  if (path[0] !== start) return { path: [], totalTime: Infinity }; // no path
+function extractNavigationSteps(osrmSteps) {
+  return osrmSteps
+    .filter((s) => s.maneuver?.type !== "arrive" || osrmSteps.indexOf(s) === osrmSteps.length - 1)
+    .map((s) => {
+      const maneuver = s.maneuver?.modifier || s.maneuver?.type || "continue";
+      const street = s.name || "unnamed road";
+      const dist = s.distance ? ` (${(s.distance / 1000).toFixed(1)} km)` : "";
+      return `${capitalize(maneuver)} on ${street}${dist}`;
+    })
+    .filter(Boolean)
+    .slice(0, 15);
+}
 
-  return { path, totalTime: parseFloat(dist[end].toFixed(2)) };
+function capitalize(s) {
+  if (!s) return "";
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 // ---------------------------------------------------------------------------
-// Signal Sequence Builder
+// Generate signal sequence along route polyline
+// Samples points from the polyline to represent traffic signals
 // ---------------------------------------------------------------------------
+function buildSignalSequence(polylineCoords, totalTimeMinutes, dispatchTime, ambulanceId) {
+  if (!polylineCoords || polylineCoords.length < 2) return [];
 
-/**
- * Converts a path (array of node IDs) into an ordered signal/intersection list
- * with cumulative ETA timestamps.
- *
- * @param {string[]} path           - Ordered node IDs
- * @param {Object}   graph          - Graph (to get edge weights)
- * @param {Object}   nodeMetadata   - { nodeId: { name, lat, lng, isSignal } }
- * @param {Date}     dispatchTime   - When the ambulance departs
- * @returns {Array}  signals array
- */
-function buildSignalSequence(path, graph, nodeMetadata, dispatchTime) {
+  // Sample ~6-8 evenly spaced points as "signals"
+  const MAX_SIGNALS = Math.min(8, Math.max(3, Math.floor(polylineCoords.length / 3)));
+  const step = Math.floor(polylineCoords.length / (MAX_SIGNALS + 1));
+
   const signals = [];
-  let cumulativeMinutes = 0;
+  let cumulativeTime = 0;
 
-  for (let i = 0; i < path.length; i++) {
-    const nodeId = path[i];
-    const meta = nodeMetadata[nodeId] || { name: nodeId, isSignal: true };
+  for (let i = 1; i <= MAX_SIGNALS; i++) {
+    const idx = i * step;
+    if (idx >= polylineCoords.length) break;
 
-    if (i > 0) {
-      // Find edge weight from previous node
-      const prev = path[i - 1];
-      const edge = (graph[prev] || []).find((e) => e.to === nodeId);
-      cumulativeMinutes += edge ? edge.weight : 0;
-    }
-
-    const eta = new Date(dispatchTime.getTime() + cumulativeMinutes * 60 * 1000);
+    const [lng, lat] = polylineCoords[idx];
+    cumulativeTime = (totalTimeMinutes * i) / (MAX_SIGNALS + 1);
+    const etaTimestamp = new Date(dispatchTime.getTime() + cumulativeTime * 60 * 1000);
 
     signals.push({
-      signalId: nodeId,
-      name: meta.name || nodeId,
-      isSignal: meta.isSignal !== false, // default true
-      lat: meta.lat || null,
-      lng: meta.lng || null,
-      etaMinutes: parseFloat(cumulativeMinutes.toFixed(2)),
-      etaTimestamp: eta.toISOString(),
-      status: "pending", // will be updated by trafficService
+      signalId: `${ambulanceId}-SIG-${String(i).padStart(2, "0")}`,
+      name: `Signal ${i}`,
+      lat: parseFloat(lat.toFixed(6)),
+      lng: parseFloat(lng.toFixed(6)),
+      etaMinutes: parseFloat(cumulativeTime.toFixed(2)),
+      etaTimestamp: etaTimestamp.toISOString(),
+      status: "pending",
+      isSignal: true,
     });
   }
 
@@ -125,90 +115,53 @@ function buildSignalSequence(path, graph, nodeMetadata, dispatchTime) {
 }
 
 // ---------------------------------------------------------------------------
-// Main Route Computation
+// Main: compute route from ambulance → hospital
 // ---------------------------------------------------------------------------
+async function computeRoute(fromLat, fromLng, toLat, toLng, ambulanceId) {
+  logEvent("ROUTE_SERVICE", `Computing route: (${fromLat},${fromLng}) → (${toLat},${toLng}) for ${ambulanceId}`);
 
-/**
- * Compute the shortest route from ambulance to hospital.
- *
- * @param {Object} ambulanceLocation  - { lat, lng, nodeId }
- * @param {Object} hospitalLocation   - { lat, lng, nodeId }
- * @param {Object} roadNetwork        - { graph, nodeMetadata }
- * @param {string} ambulanceId
- * @returns {Object} routeResult
- */
-function computeRoute(ambulanceLocation, hospitalLocation, roadNetwork, ambulanceId) {
-  const { graph, nodeMetadata } = roadNetwork;
-  const startNode = ambulanceLocation.nodeId;
-  const endNode = hospitalLocation.nodeId;
-
-  logEvent("ROUTE_SERVICE", `Computing route: ${startNode} → ${endNode} for ambulance ${ambulanceId}`);
-
-  const { path, totalTime } = dijkstra(graph, startNode, endNode);
-
-  if (path.length === 0) {
-    logEvent("ROUTE_SERVICE", `No path found from ${startNode} to ${endNode}`);
-    return null;
-  }
-
+  const routeData = await getOSRMRoute(fromLat, fromLng, toLat, toLng);
   const dispatchTime = new Date();
-  const signals = buildSignalSequence(path, graph, nodeMetadata, dispatchTime);
-  const signalCount = signals.filter((s) => s.isSignal).length;
+  const routeId = `ROUTE-${ambulanceId}-${Date.now()}`;
+
+  const signals = buildSignalSequence(
+    routeData.polylineCoords,
+    routeData.durationMinutes,
+    dispatchTime,
+    ambulanceId
+  );
 
   logEvent(
     "ROUTE_SERVICE",
-    `Route computed: ${path.length} nodes | ${signalCount} signals | ETA: ${totalTime} min`
+    `Route computed: ${routeData.distanceKm}km | ${routeData.durationMinutes}min | ${signals.length} signals`
   );
 
-  const navigationSteps = generateNavigationSteps(path, nodeMetadata);
-
   return {
-    routeId: `ROUTE-${ambulanceId}-${Date.now()}`,
-    startNode,
-    endNode,
-    path,
-    totalTimeMinutes: totalTime,
-    signalCount,
+    routeId,
+    totalDistanceKm: routeData.distanceKm,
+    totalTimeMinutes: routeData.durationMinutes,
+    signalCount: signals.length,
     signals,
-    navigationSteps,
+    polyline: {
+      type: "LineString",
+      coordinates: routeData.polylineCoords, // [[lng, lat], ...]
+    },
+    navigationSteps: routeData.steps,
     dispatchTime: dispatchTime.toISOString(),
   };
 }
 
 // ---------------------------------------------------------------------------
-// Navigation Steps Generator (Turn-by-turn for Ambulance Driver)
+// Reroute: recompute from current position to new hospital
 // ---------------------------------------------------------------------------
-
-function generateNavigationSteps(path, nodeMetadata) {
-  const steps = [];
-  for (let i = 1; i < path.length; i++) {
-    const prev = nodeMetadata[path[i - 1]] || { name: path[i - 1] };
-    const curr = nodeMetadata[path[i]] || { name: path[i] };
-    const direction = curr.direction || "Continue straight";
-    const distance = curr.distanceFromPrev || "next intersection";
-    steps.push(`${direction} at ${prev.name} → ${curr.name} (${distance})`);
-  }
-  return steps;
-}
-
-// ---------------------------------------------------------------------------
-// Reroute (called on failover or road block)
-// ---------------------------------------------------------------------------
-
-function rerouteAmbulance(currentNodeId, newHospitalNodeId, roadNetwork, ambulanceId) {
-  logEvent("ROUTE_SERVICE", `REROUTE initiated from ${currentNodeId} to new hospital ${newHospitalNodeId}`);
-  return computeRoute(
-    { nodeId: currentNodeId },
-    { nodeId: newHospitalNodeId },
-    roadNetwork,
-    ambulanceId
-  );
+async function rerouteAmbulance(currentLat, currentLng, newHospitalLat, newHospitalLng, ambulanceId) {
+  logEvent("ROUTE_SERVICE", `REROUTE: ${ambulanceId} from (${currentLat},${currentLng})`);
+  return computeRoute(currentLat, currentLng, newHospitalLat, newHospitalLng, ambulanceId);
 }
 
 module.exports = {
   computeRoute,
   rerouteAmbulance,
-  dijkstra,
+  getOSRMRoute,
   buildSignalSequence,
-  generateNavigationSteps,
 };

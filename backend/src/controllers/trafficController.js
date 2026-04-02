@@ -5,16 +5,15 @@ const {
   updateAmbulancePosition,
   clearCorridor,
 } = require("../services/trafficService");
+const Corridor = require("../models/Corridor");
 const { logEvent } = require("../utils/auditLogger");
 
 // ---------------------------------------------------------------------------
-// GET /api/traffic/corridors — All active corridors (traffic control dashboard)
+// GET /api/traffic/corridors — All active corridors
 // ---------------------------------------------------------------------------
-
 exports.getAllCorridors = (req, res) => {
   const corridors = getAllActiveCorridors();
   res.json({
-    entity: "TRAFFIC_CONTROL",
     activeCorridors: corridors.length,
     corridors,
     timestamp: new Date().toISOString(),
@@ -24,56 +23,79 @@ exports.getAllCorridors = (req, res) => {
 // ---------------------------------------------------------------------------
 // GET /api/traffic/corridor/:routeId — Single corridor state
 // ---------------------------------------------------------------------------
-
-exports.getCorridorState = (req, res) => {
+exports.getCorridorState = async (req, res) => {
   const { routeId } = req.params;
-  const state = getCorridorState(routeId);
 
+  // Try in-memory first
+  let state = getCorridorState(routeId);
+
+  // Fallback to DB if not in memory
   if (!state) {
-    return res.status(404).json({ error: "Corridor not found or already completed" });
+    const dbCorridor = await Corridor.findOne({ routeId }).lean().catch(() => null);
+    if (!dbCorridor) {
+      return res.status(404).json({ error: "Corridor not found" });
+    }
+    state = {
+      routeId: dbCorridor.routeId,
+      emergencyId: dbCorridor.emergencyId,
+      signals: dbCorridor.signals,
+      passedCount: dbCorridor.passedCount,
+      totalSignals: dbCorridor.totalSignals,
+      progress: `${dbCorridor.passedCount}/${dbCorridor.totalSignals}`,
+      state: dbCorridor.state,
+    };
   }
 
   res.json({
-    entity: "TRAFFIC_CONTROL",
     ...state,
-    signals: state.signals.map((s) => ({
-      signalId: s.signalId,
-      name: s.name,
-      status: s.status,
-      etaMinutes: s.etaMinutes,
-      etaTimestamp: s.etaTimestamp,
-    })),
     timestamp: new Date().toISOString(),
   });
 };
 
 // ---------------------------------------------------------------------------
-// POST /api/traffic/signal/override — Manual signal override (Phase 1)
-// Body: { routeId, signalId, status: "green" | "normal" | "preparing" }
+// GET /api/traffic/history — Past corridors from DB
 // ---------------------------------------------------------------------------
+exports.getCorridorHistory = async (req, res) => {
+  try {
+    const { limit = 20, state } = req.query;
+    const filter = state ? { state } : {};
 
-exports.overrideSignal = (req, res) => {
-  const { routeId, signalId, status } = req.body;
+    const corridors = await Corridor.find(filter)
+      .sort({ startedAt: -1 })
+      .limit(parseInt(limit))
+      .select("-overrides")
+      .lean();
 
-  const validStatuses = ["green", "normal", "preparing", "restored"];
+    res.json(corridors);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch corridor history" });
+  }
+};
+
+// ---------------------------------------------------------------------------
+// POST /api/traffic/signal/override — Manual override
+// ---------------------------------------------------------------------------
+exports.overrideSignal = async (req, res) => {
+  const { routeId, signalId, status, operator = "OPERATOR" } = req.body;
+
+  const validStatuses = ["green", "normal", "preparing", "restored", "pending"];
   if (!routeId || !signalId || !validStatuses.includes(status)) {
     return res.status(400).json({
-      error: `routeId, signalId, and status (${validStatuses.join(" | ")}) are required`,
+      error: `routeId, signalId, and status (${validStatuses.join(" | ")}) required`,
     });
   }
 
   const io = req.app.get("io");
-  const updatedCorridor = manualOverrideSignal(routeId, signalId, status, io);
+  const updatedCorridor = await manualOverrideSignal(routeId, signalId, status, io, operator);
 
   if (!updatedCorridor) {
     return res.status(404).json({ error: "Corridor or signal not found" });
   }
 
-  logEvent("TRAFFIC_CONTROLLER", `Manual override: Signal ${signalId} → ${status} on route ${routeId}`);
+  logEvent("TRAFFIC_CTRL", `Manual override: ${signalId} → ${status} on route ${routeId} by ${operator}`);
 
   res.json({
-    entity: "TRAFFIC_CONTROL",
-    message: `Signal ${signalId} manually set to ${status.toUpperCase()}`,
+    message: `Signal ${signalId} set to ${status.toUpperCase()}`,
     routeId,
     signalId,
     newStatus: status,
@@ -82,43 +104,41 @@ exports.overrideSignal = (req, res) => {
 };
 
 // ---------------------------------------------------------------------------
-// POST /api/traffic/ambulance-position — Update ambulance position in corridor
-// Body: { routeId, currentSignalIndex }
+// POST /api/traffic/ambulance-position — Position update from ambulance
 // ---------------------------------------------------------------------------
-
 exports.updateAmbulancePosition = (req, res) => {
   const { routeId, currentSignalIndex } = req.body;
 
   if (!routeId || currentSignalIndex === undefined) {
-    return res.status(400).json({ error: "routeId and currentSignalIndex are required" });
+    return res.status(400).json({ error: "routeId and currentSignalIndex required" });
   }
 
   const io = req.app.get("io");
   updateAmbulancePosition(routeId, currentSignalIndex, io);
 
   const state = getCorridorState(routeId);
-
   res.json({
-    entity: "TRAFFIC_CONTROL",
-    message: `Position updated — ambulance at signal ${currentSignalIndex}`,
-    progress: state ? state.progress : "Corridor not found",
+    message: `Ambulance at signal ${currentSignalIndex}`,
+    progress: state ? state.progress : "Corridor not active",
     timestamp: new Date().toISOString(),
   });
 };
 
 // ---------------------------------------------------------------------------
-// DELETE /api/traffic/corridor/:routeId — Force-clear a corridor (operator)
+// DELETE /api/traffic/corridor/:routeId — Force-clear corridor
 // ---------------------------------------------------------------------------
-
-exports.clearCorridorManually = (req, res) => {
+exports.clearCorridorManually = async (req, res) => {
   const { routeId } = req.params;
 
   const state = getCorridorState(routeId);
   if (!state) {
-    return res.status(404).json({ error: "Corridor not found" });
+    // Still try to update DB
+    await Corridor.updateOne({ routeId }, { $set: { state: "cancelled" } }).catch(() => {});
+    return res.status(404).json({ error: "Corridor not active in memory" });
   }
 
   clearCorridor(routeId);
+  await Corridor.updateOne({ routeId }, { $set: { state: "cancelled", completedAt: new Date() } }).catch(() => {});
 
   const io = req.app.get("io");
   if (io) {
@@ -129,7 +149,36 @@ exports.clearCorridorManually = (req, res) => {
     });
   }
 
-  logEvent("TRAFFIC_CONTROLLER", `Corridor ${routeId} force-cleared by operator`);
-
+  logEvent("TRAFFIC_CTRL", `Corridor ${routeId} force-cleared`);
   res.json({ message: `Corridor ${routeId} cleared`, routeId });
+};
+
+// ---------------------------------------------------------------------------
+// GET /api/traffic/stats — Summary stats
+// ---------------------------------------------------------------------------
+exports.getStats = async (req, res) => {
+  try {
+    const [total, active, completed, cancelled] = await Promise.all([
+      Corridor.countDocuments(),
+      Corridor.countDocuments({ state: "active" }),
+      Corridor.countDocuments({ state: "completed" }),
+      Corridor.countDocuments({ state: "cancelled" }),
+    ]);
+
+    const avgSignals = await Corridor.aggregate([
+      { $group: { _id: null, avg: { $avg: "$totalSignals" } } },
+    ]);
+
+    res.json({
+      total,
+      active,
+      completed,
+      cancelled,
+      avgSignalsPerCorridor: avgSignals[0]?.avg?.toFixed(1) || 0,
+      inMemory: getAllActiveCorridors().length,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch stats" });
+  }
 };

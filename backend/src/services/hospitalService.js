@@ -1,13 +1,19 @@
+const axios = require("axios");
 const Hospital = require("../models/Hospital");
 const { logEvent } = require("../utils/auditLogger");
+const {
+  OVERPASS_API_URL,
+  MAX_HOSPITALS_TO_QUERY,
+  HOSPITAL_RESPONSE_TIMEOUT_MS,
+  AMBULANCE_AVG_SPEED_KMH,
+  EARTH_RADIUS_KM,
+} = require("../config/constants");
 
-const HOSPITAL_RESPONSE_TIMEOUT_MS = 8000;
-
-/**
- * Haversine formula — straight-line distance in km between two lat/lng points.
- */
+// ---------------------------------------------------------------------------
+// Haversine Distance
+// ---------------------------------------------------------------------------
 function haversineDistance(lat1, lng1, lat2, lng2) {
-  const R = 6371;
+  const R = EARTH_RADIUS_KM;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLng = ((lng2 - lng1) * Math.PI) / 180;
   const a =
@@ -18,156 +24,241 @@ function haversineDistance(lat1, lng1, lat2, lng2) {
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-/**
- * Estimate ETA in minutes given distance in km.
- * Assumes average ambulance speed of 60 km/h in city.
- */
 function estimateETA(distanceKm) {
-  const avgSpeedKmH = 60;
-  return Math.ceil((distanceKm / avgSpeedKmH) * 60);
+  return Math.ceil((distanceKm / AMBULANCE_AVG_SPEED_KMH) * 60);
 }
 
-/**
- * Query 3–4 nearest hospitals from the registry.
- * Returns hospitals sorted by distance with ETA, filtered by availability.
- */
-async function queryNearestHospitals(ambulanceLat, ambulanceLng, emergencyType = null) {
-  const allHospitals = await Hospital.find({});
+// ---------------------------------------------------------------------------
+// Discover hospitals from OpenStreetMap via Overpass API
+// and upsert them into the DB
+// ---------------------------------------------------------------------------
+async function discoverAndSyncHospitals(lat, lng, radiusMeters = 10000) {
+  logEvent("HOSPITAL_SERVICE", `Discovering hospitals via Overpass within ${radiusMeters}m of (${lat}, ${lng})`);
+
+  const query = `
+    [out:json][timeout:15];
+    (
+      node["amenity"="hospital"](around:${radiusMeters},${lat},${lng});
+      way["amenity"="hospital"](around:${radiusMeters},${lat},${lng});
+      node["amenity"="clinic"](around:${radiusMeters},${lat},${lng});
+    );
+    out center;
+  `;
+
+  try {
+    const resp = await axios.post(OVERPASS_API_URL, `data=${encodeURIComponent(query)}`, {
+      timeout: 15000,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    });
+
+    const elements = resp.data?.elements || [];
+    logEvent("HOSPITAL_SERVICE", `Overpass returned ${elements.length} hospital nodes`);
+
+    const upserted = [];
+
+    for (const el of elements) {
+      const elLat = el.lat ?? el.center?.lat;
+      const elLng = el.lon ?? el.center?.lon;
+      if (!elLat || !elLng) continue;
+
+      const name = el.tags?.name || el.tags?.["name:en"] || "Unknown Hospital";
+      const osmId = String(el.id);
+      const hospitalId = `OSM-${osmId}`;
+
+      try {
+        const doc = await Hospital.findOneAndUpdate(
+          { hospitalId },
+          {
+            $setOnInsert: {
+              hospitalId,
+              name,
+              address: el.tags?.["addr:full"] || el.tags?.["addr:street"] || "Address not available",
+              lat: elLat,
+              lng: elLng,
+              location: { type: "Point", coordinates: [elLng, elLat] },
+              emergencyBeds: { total: 10, available: 8, reserved: 0 },
+              status: "available",
+              source: "osm",
+              osmId,
+              specialties: buildSpecialties(el.tags),
+              traumaLevel: el.tags?.["healthcare:speciality"] ? "Level 2" : "Level 3",
+            },
+            $set: {
+              name,
+              lastUpdated: new Date(),
+            },
+          },
+          { upsert: true, new: true }
+        );
+        upserted.push(doc);
+      } catch (err) {
+        // Skip duplicates silently
+      }
+    }
+
+    logEvent("HOSPITAL_SERVICE", `Synced ${upserted.length} hospitals from OSM`);
+    return upserted;
+  } catch (err) {
+    logEvent("HOSPITAL_SERVICE", `Overpass API failed: ${err.message} — using DB only`);
+    return [];
+  }
+}
+
+function buildSpecialties(tags = {}) {
+  const specs = ["General Emergency"];
+  if (tags["healthcare:speciality"]) {
+    specs.push(...tags["healthcare:speciality"].split(";").map((s) => s.trim()));
+  }
+  return [...new Set(specs)];
+}
+
+// ---------------------------------------------------------------------------
+// Query nearest hospitals from DB (after sync)
+// ---------------------------------------------------------------------------
+async function queryNearestHospitals(lat, lng, radiusKm = 15, emergencyType = null) {
+  // Try geospatial query first
+  let hospitals = await Hospital.find({
+    location: {
+      $near: {
+        $geometry: { type: "Point", coordinates: [lng, lat] },
+        $maxDistance: radiusKm * 1000,
+      },
+    },
+    status: { $ne: "offline" },
+  }).limit(MAX_HOSPITALS_TO_QUERY + 2);
+
+  // Fallback: if geospatial index not ready, use simple find
+  if (!hospitals || hospitals.length === 0) {
+    hospitals = await Hospital.find({ status: { $ne: "offline" } }).limit(10);
+  }
 
   // Attach distance + ETA
-  const withDistance = allHospitals.map((h) => {
-    const dist = haversineDistance(ambulanceLat, ambulanceLng, h.location.lat, h.location.lng);
-    const eta = estimateETA(dist);
-    return { hospital: h, distanceKm: parseFloat(dist.toFixed(2)), eta };
+  const withMeta = hospitals.map((h) => {
+    const dist = haversineDistance(lat, lng, h.lat, h.lng);
+    return {
+      hospital: h,
+      distanceKm: parseFloat(dist.toFixed(2)),
+      eta: estimateETA(dist),
+      responseStatus: h.status,
+    };
   });
 
-  // Sort by distance, pick nearest 4
-  withDistance.sort((a, b) => a.distanceKm - b.distanceKm);
-  const nearest = withDistance.slice(0, 4);
-
-  logEvent("HOSPITAL_SERVICE", `Queried ${nearest.length} nearest hospitals for ambulance at (${ambulanceLat}, ${ambulanceLng})`);
-
-  return nearest;
+  // Sort by distance
+  withMeta.sort((a, b) => a.distanceKm - b.distanceKm);
+  return withMeta.slice(0, MAX_HOSPITALS_TO_QUERY);
 }
 
-/**
- * Simulate hospital response with timeout handling.
- * In production, this would call each hospital's portal API.
- * Here we read live DB status and simulate async response.
- */
-async function fetchHospitalResponse(hospitalEntry) {
+// ---------------------------------------------------------------------------
+// Get live availability (reads from DB — no HTTP to hospitals in this version)
+// ---------------------------------------------------------------------------
+async function fetchHospitalResponse(entry) {
   return new Promise((resolve) => {
     const timeout = setTimeout(() => {
-      resolve({ ...hospitalEntry, responseStatus: "no_response" });
+      resolve({ ...entry, responseStatus: "no_response" });
     }, HOSPITAL_RESPONSE_TIMEOUT_MS);
 
-    // Simulate instant DB read (replace with real HTTP call if hospitals have their own service)
-    const h = hospitalEntry.hospital;
+    const h = entry.hospital;
     clearTimeout(timeout);
 
     const status =
-      h.emergencyBeds.available >= 1
+      h.emergencyBeds.available >= 1 && h.status !== "offline"
         ? "available"
+        : h.status === "offline"
+        ? "no_response"
         : "full";
 
-    resolve({ ...hospitalEntry, responseStatus: status });
+    resolve({ ...entry, responseStatus: status });
   });
 }
 
-/**
- * Rank hospitals:
- *  1. Must have ≥1 emergency bed (mandatory)
- *  2. Shortest ETA
- *  3. Fewest signals on route (approximated by distance here; routeService adds signal count)
- */
-function rankHospitals(respondedHospitals) {
-  const eligible = respondedHospitals.filter(
+// ---------------------------------------------------------------------------
+// Rank candidates
+// ---------------------------------------------------------------------------
+function rankHospitals(responded) {
+  const eligible = responded.filter(
     (h) => h.responseStatus === "available" && h.hospital.emergencyBeds.available >= 1
   );
-
   eligible.sort((a, b) => {
+    // Primary: ETA, Secondary: available beds (more = better)
     if (a.eta !== b.eta) return a.eta - b.eta;
-    return a.distanceKm - b.distanceKm;
+    return b.hospital.emergencyBeds.available - a.hospital.emergencyBeds.available;
   });
-
   return eligible;
 }
 
-/**
- * Main orchestration: query → fetch responses → rank → return best candidate.
- */
-async function selectBestHospital(ambulanceLat, ambulanceLng, emergencyType, ambulanceId) {
-  const nearest = await queryNearestHospitals(ambulanceLat, ambulanceLng, emergencyType);
+// ---------------------------------------------------------------------------
+// Main: select best hospital for an emergency
+// ---------------------------------------------------------------------------
+async function selectBestHospital(lat, lng, emergencyType, ambulanceId, emergencyId) {
+  // 1. Sync hospitals from OSM in background (non-blocking for first call)
+  discoverAndSyncHospitals(lat, lng, 15000).catch(() => {});
 
-  logEvent("HOSPITAL_SERVICE", `Sending bed availability requests to ${nearest.length} hospitals`);
+  // 2. Query DB for nearest
+  const nearest = await queryNearestHospitals(lat, lng, 15, emergencyType);
 
-  // Parallel response fetch with timeout
+  if (nearest.length === 0) {
+    logEvent("HOSPITAL_SERVICE", "No hospitals found in DB — trying wider radius");
+    const wider = await queryNearestHospitals(lat, lng, 30, emergencyType);
+    if (wider.length === 0) {
+      return { selected: null, candidates: [] };
+    }
+    nearest.push(...wider);
+  }
+
+  logEvent("HOSPITAL_SERVICE", `Checking availability for ${nearest.length} hospitals`);
+
+  // 3. Fetch live status
   const responses = await Promise.all(nearest.map(fetchHospitalResponse));
 
-  // Log each response
-  responses.forEach((r) => {
+  responses.forEach((r) =>
     logEvent(
       "HOSPITAL_SERVICE",
-      `Hospital "${r.hospital.name}" responded: ${r.responseStatus} | ETA: ${r.eta} min | Beds: ${r.hospital.emergencyBeds.available}`
-    );
-  });
+      `  ${r.hospital.name}: ${r.responseStatus} | ETA ${r.eta}m | Beds ${r.hospital.emergencyBeds.available}`
+    )
+  );
 
+  // 4. Rank
   const ranked = rankHospitals(responses);
 
   if (ranked.length === 0) {
-    logEvent("HOSPITAL_SERVICE", "No eligible hospitals found — all full or unresponsive");
     return { selected: null, candidates: responses };
   }
 
   const selected = ranked[0];
 
-  // Push pending request to hospital record
-  await Hospital.findByIdAndUpdate(selected.hospital._id, {
-    $push: {
-      pendingRequests: {
-        ambulanceId,
-        eta: selected.eta,
-        emergencyType,
-        requestedAt: new Date(),
-        responseStatus: "pending",
-      },
-    },
-  });
+  // 5. Push pending request to hospital
+  await selected.hospital.addRequest(ambulanceId, emergencyId, selected.eta, emergencyType);
 
   logEvent(
     "HOSPITAL_SERVICE",
-    `Selected hospital: "${selected.hospital.name}" | ETA: ${selected.eta} min | Distance: ${selected.distanceKm} km`
+    `Selected: ${selected.hospital.name} | ETA ${selected.eta}m | ${selected.distanceKm}km`
   );
 
   return { selected, candidates: responses };
 }
 
-/**
- * Failover: called when selected hospital becomes unavailable mid-route.
- * Excludes the failed hospital and recomputes.
- */
-async function failoverHospital(ambulanceLat, ambulanceLng, emergencyType, ambulanceId, excludeHospitalId) {
-  logEvent("HOSPITAL_SERVICE", `FAILOVER triggered — excluding hospital ${excludeHospitalId}`);
+// ---------------------------------------------------------------------------
+// Failover
+// ---------------------------------------------------------------------------
+async function failoverHospital(lat, lng, emergencyType, ambulanceId, excludeHospitalId) {
+  logEvent("HOSPITAL_SERVICE", `FAILOVER: excluding ${excludeHospitalId}`);
 
-  const nearest = await queryNearestHospitals(ambulanceLat, ambulanceLng, emergencyType);
+  const nearest = await queryNearestHospitals(lat, lng, 20, emergencyType);
   const filtered = nearest.filter(
-    (h) => h.hospital.hospitalId !== excludeHospitalId && h.hospital._id.toString() !== excludeHospitalId
+    (h) =>
+      h.hospital.hospitalId !== excludeHospitalId &&
+      h.hospital._id.toString() !== excludeHospitalId
   );
+
+  if (filtered.length === 0) return null;
 
   const responses = await Promise.all(filtered.map(fetchHospitalResponse));
   const ranked = rankHospitals(responses);
 
-  if (ranked.length === 0) {
-    logEvent("HOSPITAL_SERVICE", "FAILOVER: No alternative hospitals available");
-    return null;
-  }
+  if (ranked.length === 0) return null;
 
   const newSelected = ranked[0];
-  logEvent(
-    "HOSPITAL_SERVICE",
-    `FAILOVER resolved: New hospital "${newSelected.hospital.name}" | ETA: ${newSelected.eta} min`
-  );
-
+  logEvent("HOSPITAL_SERVICE", `FAILOVER resolved: ${newSelected.hospital.name}`);
   return newSelected;
 }
 
@@ -175,6 +266,7 @@ module.exports = {
   selectBestHospital,
   failoverHospital,
   queryNearestHospitals,
+  discoverAndSyncHospitals,
   haversineDistance,
   estimateETA,
 };
