@@ -6,7 +6,8 @@
 backend/
 └── src/
     ├── config/
-    │   └── db.js                # MongoDB connection setup
+    │   ├── db.js                # MongoDB connection setup
+    │   └── constants.js
     │
     ├── controllers/
     │   ├── ambulanceController.js
@@ -15,6 +16,7 @@ backend/
     │
     ├── models/
     │   ├── Ambulance.js
+    │   ├── Traffic.js
     │   └── Hospital.js
     │
     ├── routes/
