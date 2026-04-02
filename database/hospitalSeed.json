@@ -1,0 +1,46 @@
+[
+  {
+    "hospitalId": "HOSP_DOON",
+    "name": "Doon Government Hospital",
+    "address": "New Road, Shivaji Nagar, Dehradun, Uttarakhand 248001",
+    "location": { "lat": 30.3058, "lng": 78.0322 },
+    "emergencyBeds": { "total": 20, "available": 15 },
+    "status": "available",
+    "contactNumber": "0135-2658431",
+    "specialties": ["Trauma", "General Surgery", "Orthopaedics", "Medicine"],
+    "pendingRequests": []
+  },
+  {
+    "hospitalId": "HOSP_MAX_DOON",
+    "name": "Max Super Speciality Hospital Dehradun",
+    "address": "Mussoorie Diversion Road, Malsi, Dehradun, Uttarakhand 248001",
+    "location": { "lat": 30.3187, "lng": 78.0268 },
+    "emergencyBeds": { "total": 15, "available": 8 },
+    "status": "available",
+    "contactNumber": "0135-6678000",
+    "specialties": ["Cardiac", "Neurology", "Trauma", "ICU"],
+    "pendingRequests": []
+  },
+  {
+    "hospitalId": "HOSP_SHRI_MAHANT",
+    "name": "Shri Mahant Indiresh Hospital",
+    "address": "Prem Nagar, Dehradun, Uttarakhand 248007",
+    "location": { "lat": 30.3040, "lng": 78.0100 },
+    "emergencyBeds": { "total": 25, "available": 18 },
+    "status": "available",
+    "contactNumber": "0135-2761400",
+    "specialties": ["Multi-specialty", "Trauma", "Burns", "Paediatrics"],
+    "pendingRequests": []
+  },
+  {
+    "hospitalId": "HOSP_SYNERGY",
+    "name": "Synergy Institute of Medical Sciences",
+    "address": "Jakhan, Rajpur Road, Dehradun, Uttarakhand 248001",
+    "location": { "lat": 30.3560, "lng": 78.0420 },
+    "emergencyBeds": { "total": 12, "available": 5 },
+    "status": "available",
+    "contactNumber": "0135-2763002",
+    "specialties": ["Oncology", "Cardiac", "Orthopaedics", "Emergency"],
+    "pendingRequests": []
+  }
+]
