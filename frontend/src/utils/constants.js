@@ -22,6 +22,6 @@ export const HOSPITAL_STATUS = {
   no_response: { label: 'NO RESPONSE', color: '#6b7280' },
 };
 
-// Default map center (Delhi — update to your city)
-export const DEFAULT_MAP_CENTER = [28.6139, 77.209];
+// Default map center (Dehradun)
+export const DEFAULT_MAP_CENTER = [30.3165, 78.0322];
 export const DEFAULT_MAP_ZOOM = 13;

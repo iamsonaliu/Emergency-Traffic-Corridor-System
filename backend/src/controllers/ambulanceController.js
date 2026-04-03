@@ -37,7 +37,22 @@ function generateEmergencyId() {
 // ---------------------------------------------------------------------------
 exports.triggerEmergency = async (req, res) => {
   try {
-    const { ambulanceId, lat, lng, emergencyType = "general" } = req.body;
+    let { ambulanceId, lat, lng, emergencyType = "general", location } = req.body;
+
+    // Support simulator payload where location is nested
+    if ((lat === undefined || lng === undefined) && location) {
+      lat = location.lat;
+      lng = location.lng;
+    }
+
+    // If no ambulanceId was provided, allocate the first idle ambulance
+    if (!ambulanceId) {
+      const idleAmbulance = await Ambulance.findOne({ status: "idle" }).sort({ lastSeenAt: 1 });
+      if (!idleAmbulance) {
+        return res.status(503).json({ error: "No idle ambulances available" });
+      }
+      ambulanceId = idleAmbulance.ambulanceId;
+    }
 
     if (!ambulanceId || lat === undefined || lng === undefined) {
       return res.status(400).json({ error: "ambulanceId, lat, lng are required" });

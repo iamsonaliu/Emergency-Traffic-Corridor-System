@@ -108,6 +108,10 @@ async function initCorridor(routeResult, io) {
       emergencyId: routeResult.emergencyId,
       signals: corridorState.signals,
       totalSignals: signals.length,
+      polyline: routeResult.polyline,
+      navigationSteps: routeResult.navigationSteps,
+      totalDistanceKm: routeResult.totalDistanceKm,
+      totalTimeMinutes: routeResult.totalTimeMinutes,
       timestamp: new Date().toISOString(),
     });
   }

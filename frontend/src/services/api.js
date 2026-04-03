@@ -18,23 +18,23 @@ export const cancelEmergency = (emergencyId) =>
 
 // ── Hospitals ──────────────────────────────────────────────────
 export const getAllHospitals = () =>
-  api.get('/hospitals').then((r) => r.data);
+  api.get('/hospital').then((r) => r.data);
 
 export const getHospital = (id) =>
-  api.get(`/hospitals/${id}`).then((r) => r.data);
+  api.get(`/hospital/${id}`).then((r) => r.data);
 
 export const respondToRequest = (id, action, emergencyId) =>
-  api.patch(`/hospitals/${id}/respond`, { action, emergencyId }).then((r) => r.data);
+  api.post(`/hospital/${id}/respond`, { action, ambulanceId: id, emergencyId }).then((r) => r.data);
 
 export const updateBedCount = (id, data) =>
-  api.patch(`/hospitals/${id}/beds`, data).then((r) => r.data);
+  api.put(`/hospital/${id}/beds`, data).then((r) => r.data);
 
 export const getIncomingRequests = (id) =>
-  api.get(`/hospitals/${id}/incoming`).then((r) => r.data);
+  api.get(`/hospital/${id}/requests`).then((r) => r.data);
 
 // ── Traffic ────────────────────────────────────────────────────
 export const getActiveCorridors = () =>
-  api.get('/traffic/active').then((r) => r.data);
+  api.get('/traffic/corridors').then((r) => r.data);
 
 export const getCorridorStatus = (emergencyId) =>
   api.get(`/traffic/corridor/${emergencyId}`).then((r) => r.data);

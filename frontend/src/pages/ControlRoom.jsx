@@ -1,14 +1,18 @@
 import { useState, useEffect } from 'react'
 import MapView from '../components/MapView'
 import { useSocket, useSocketEvent, getSocket } from '../services/socket'
+import { getAllHospitals } from '../services/api'
 import { IncidentTypeTag } from '../components/IncidentTypeTag'
 import { ETATimer } from '../components/ETATimer'
 import { StatusBadge } from '../components/StatusBadge'
 import { LiveDot } from '../components/LiveDot'
+import { DEFAULT_MAP_CENTER } from '../utils/constants'
 
 export default function ControlRoom() {
-  const [ambulancePos] = useState([28.6139, 77.213])
+  const [ambulancePos] = useState(DEFAULT_MAP_CENTER)
   const [fleet, setFleet] = useState([])
+  const [hospitals, setHospitals] = useState([])
+  const [corridors, setCorridors] = useState([])
   const [incidents, setIncidents] = useState([
     { id: 'INC-2041', type: 'TRAUMA', unit: 'AMB-04', status: 'active', eta: 420 },
     { id: 'INC-2040', type: 'CARDIAC', unit: 'AMB-02', status: 'idle', eta: 0 }
@@ -28,10 +32,22 @@ export default function ControlRoom() {
     if (connected) {
       getSocket().emit('request_all_positions')
       addLog('SYSTEM: CONNECTED TO SOCKET ROOM [control]', 'success')
+      loadInitialData()
     } else {
        addLog('SYSTEM: SOCKET DISCONNECTED - RETRYING...', 'alert')
     }
   }, [connected])
+
+  const loadInitialData = async () => {
+    try {
+      const hospitalsData = await getAllHospitals()
+      setHospitals(hospitalsData)
+      addLog(`SYSTEM: LOADED ${hospitalsData.length} HOSPITALS`, 'success')
+    } catch (err) {
+      addLog('SYSTEM: FAILED TO LOAD HOSPITALS', 'alert')
+      console.error('Error loading hospitals:', err)
+    }
+  }
 
   const addLog = (msg, type) => {
     setLogs(prev => {
@@ -68,6 +84,51 @@ export default function ControlRoom() {
     addLog(`HOSPITAL [${data.hospitalName}] REJECTED ${data.ambulanceId}`, 'alert')
   })
 
+  useSocketEvent('emergency_dispatched', (data) => {
+    addLog(`EMERGENCY DISPATCHED: ${data.ambulanceId} → ${data.hospital.name} (ETA: ${data.route.totalTimeMinutes}min)`, 'success')
+  })
+
+  useSocketEvent('corridor_initialized', (data) => {
+    setCorridors(prev => [...prev, {
+      routeId: data.routeId,
+      emergencyId: data.emergencyId,
+      signals: data.signals || [],
+      passedCount: 0,
+      totalSignals: data.totalSignals || (data.signals?.length || 0),
+      progress: `0/${data.totalSignals || (data.signals?.length || 0)}`,
+      polyline: data.polyline || null,
+      navigationSteps: data.navigationSteps || []
+    }])
+    addLog(`CORRIDOR ${data.routeId} INITIALIZED (${data.totalSignals || (data.signals?.length || 0)} SIGNALS)`, 'success')
+  })
+
+  useSocketEvent('signal_update', (data) => {
+    setCorridors(prev => prev.map(corridor => {
+      if (corridor.routeId === data.routeId) {
+        const updatedSignals = corridor.signals.map(signal => 
+          signal.signalId === data.signalId 
+            ? { ...signal, status: data.status, lat: data.lat, lng: data.lng }
+            : signal
+        )
+        return { ...corridor, signals: updatedSignals }
+      }
+      return corridor
+    }))
+  })
+
+  useSocketEvent('corridor_progress', (data) => {
+    setCorridors(prev => prev.map(corridor => 
+      corridor.routeId === data.routeId 
+        ? { ...corridor, passedCount: data.passedCount, progress: data.progress }
+        : corridor
+    ))
+  })
+
+  useSocketEvent('corridor_complete', (data) => {
+    setCorridors(prev => prev.filter(c => c.routeId !== data.routeId))
+    addLog(`CORRIDOR ${data.routeId} COMPLETED`, 'success')
+  })
+
   const displayFleet = fleet.length > 0 ? fleet.map((f, i) => ({
     unit: f.ambulanceId || `AMB-0${i}`,
     driver: 'DRIVER ' + String.fromCharCode(65 + i),
@@ -87,7 +148,7 @@ export default function ControlRoom() {
         
         {/* Floating Top Left Overlay map stats */}
         <div className="absolute top-4 left-4 z-[500] border border-[#1f2b2b] bg-[#131616]/80 p-2 flex items-center gap-4" style={{backdropFilter: 'blur(4px)'}}>
-           <div className="flex items-center gap-1.5 font-mono text-[10px] text-[#e2e8e8] tracking-widest"><LiveDot color="green" size="sm"/> ACTIVE CORRIDORS: 0</div>
+           <div className="flex items-center gap-1.5 font-mono text-[10px] text-[#e2e8e8] tracking-widest"><LiveDot color="green" size="sm"/> ACTIVE CORRIDORS: {corridors.length}</div>
            <div className="text-[#374444]">|</div>
            <div className="flex items-center gap-1.5 font-mono text-[10px] text-[#4DEEEA] tracking-widest"><LiveDot color="amber" size="sm"/> AMBULANCES: {fleet.length}</div>
            <div className="text-[#374444]">|</div>
@@ -105,16 +166,17 @@ export default function ControlRoom() {
         </div>
 
         <MapView
-          center={[28.614, 77.213]}
-          ambulancePos={showAmbulances ? ambulancePos : null}
-          hospitalCandidates={showHospitals ? [] : []} // Update with real data if needed
-          signals={[]}
+          center={DEFAULT_MAP_CENTER}
+          ambulances={showAmbulances ? fleet : []}
+          hospitalCandidates={showHospitals ? hospitals : []}
+          signals={corridors.flatMap(c => c.signals || [])}
+          routePolyline={corridors.length > 0 ? corridors[0].polyline : null}
         />
         
         {/* Map Coordinates overlay bottom left */}
         <div className="absolute bottom-4 left-4 z-[500]">
            <span className="font-mono text-[9px] text-[#374444] tracking-[0.15em]">
-             LAT: 28.6139 | LNG: 77.2090 | ALT: 216M
+             LAT: 30.3165 | LNG: 78.0322 | ALT: 435M
            </span>
         </div>
       </div>

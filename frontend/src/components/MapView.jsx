@@ -23,11 +23,21 @@ const makeHospitalIcon = (selected) => L.divIcon({
 })
 
 const makeSignalIcon = (status) => {
-  const c = {green:'#10b981',preparing:'#f59e0b',cleared:'#374151',normal:'#2d3f3f'}[status]||'#2d3f3f'
+  const colors = {
+    green: '#10b981',
+    preparing: '#f59e0b',
+    pending: '#2d3f3f',
+    restored: '#374151',
+    cleared: '#374151',
+    normal: '#2d3f3f'
+  }
+  const c = colors[status] || '#2d3f3f'
+  const hasGlow = status === 'green' || status === 'preparing'
   return L.divIcon({
-    className:'',
-    html:`<div style="width:12px;height:12px;border-radius:50%;background:${c};border:1px solid ${c};box-shadow:${status==='green'?`0 0 8px ${c}`:'none'};"></div>`,
-    iconSize:[12,12], iconAnchor:[6,6],
+    className: '',
+    html: `<div style="width:14px;height:14px;border-radius:50%;background:${c};border:2px solid ${c};box-shadow:${hasGlow ? `0 0 8px ${c}` : 'none'};"></div>`,
+    iconSize: [14, 14],
+    iconAnchor: [7, 7],
   })
 }
 
@@ -38,34 +48,85 @@ function FlyTo({ center, zoom=14 }) {
 }
 
 export default function MapView({
-  center=[28.6139,77.209], zoom=13,
-  ambulancePos, hospitalCandidates=[], selectedHospital,
+  center=[30.3165, 78.0322], zoom=13,  // Dehradun coordinates
+  ambulances=[], hospitalCandidates=[], selectedHospital,
   signals=[], routePolyline, flyTo, sectorLabel, children,
 }) {
   let routeCoords = []
-  try { if (routePolyline) routeCoords = JSON.parse(routePolyline).map(([lg,lt])=>[lt,lg]) } catch {}
+  try {
+    if (routePolyline) {
+      if (typeof routePolyline === 'string') {
+        routeCoords = JSON.parse(routePolyline).map(([lg, lt]) => [lt, lg])
+      } else if (routePolyline?.coordinates) {
+        routeCoords = routePolyline.coordinates.map(([lg, lt]) => [lt, lg])
+      }
+    }
+  } catch (err) {
+    console.warn('MapView: invalid routePolyline', err)
+  }
+
+  const validAmbulances = ambulances.filter((ambulance) =>
+    ambulance?.lastKnownGps?.lat !== undefined && ambulance?.lastKnownGps?.lng !== undefined
+  )
+
+  const validHospitals = hospitalCandidates.filter((h) => h?.lat !== undefined && h?.lng !== undefined)
+  const validSignals = signals.filter((s) => (s?.lat !== undefined && s?.lng !== undefined) || (s?.location?.lat !== undefined && s?.location?.lng !== undefined))
 
   return (
     <div className="relative w-full h-full">
-      <MapContainer center={ambulancePos||center} zoom={zoom} style={{width:'100%',height:'100%'}} zoomControl>
+      <MapContainer center={center} zoom={zoom} style={{width:'100%',height:'100%'}} zoomControl>
         <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="© OpenStreetMap" />
         {flyTo && <FlyTo center={flyTo} />}
         {routeCoords.length>0 && <Polyline positions={routeCoords} pathOptions={{color:'#10b981',weight:4,opacity:0.9}} />}
-        {ambulancePos && (
-          <Marker position={ambulancePos} icon={ambulanceMarker}>
-            <Popup><span style={{fontFamily:'Share Tech Mono',fontSize:11,color:'#10b981'}}>🚑 AMBULANCE</span></Popup>
-          </Marker>
-        )}
-        {hospitalCandidates.map(h=>(
-          <Marker key={h.hospitalId} position={[h.location.lat,h.location.lng]} icon={makeHospitalIcon(selectedHospital?.hospitalId===h.hospitalId)}>
-            <Popup><span style={{fontFamily:'Share Tech Mono',fontSize:11}}>{h.name} | Beds:{h.availableBeds} | ETA:{h.etaMinutes}min</span></Popup>
+        {validAmbulances.map((ambulance) => (
+          <Marker
+            key={ambulance.ambulanceId}
+            position={[ambulance.lastKnownGps.lat, ambulance.lastKnownGps.lng]}
+            icon={ambulanceMarker}
+          >
+            <Popup>
+              <span style={{ fontFamily: 'Share Tech Mono', fontSize: 11, color: '#10b981' }}>
+                🚑 {ambulance.ambulanceId}
+                <br />
+                {ambulance.driverName}
+                <br />
+                Status: {ambulance.status?.toUpperCase()}
+                <br />
+                Speed: {Math.round(ambulance.lastKnownGps?.speed || 0)} km/h
+              </span>
+            </Popup>
           </Marker>
         ))}
-        {signals.map(s=>(
-          <Marker key={s.signalId} position={[s.location.lat,s.location.lng]} icon={makeSignalIcon(s.status)}>
-            <Popup><span style={{fontFamily:'Share Tech Mono',fontSize:11}}>{s.signalId} {s.status.toUpperCase()}</span></Popup>
+        {validHospitals.map((h) => (
+          <Marker
+            key={h.hospitalId}
+            position={[h.lat, h.lng]}
+            icon={makeHospitalIcon(selectedHospital?.hospitalId === h.hospitalId)}
+          >
+            <Popup>
+              <span style={{ fontFamily: 'Share Tech Mono', fontSize: 11 }}>
+                {h.name} | Beds:{h.emergencyBeds?.available ?? '?'} / {h.emergencyBeds?.total ?? '?'} | Status:{h.status}
+              </span>
+            </Popup>
           </Marker>
         ))}
+        {validSignals.map((s) => {
+          const signalLat = s?.lat ?? s?.location?.lat
+          const signalLng = s?.lng ?? s?.location?.lng
+          return (
+            <Marker key={s.signalId} position={[signalLat, signalLng]} icon={makeSignalIcon(s.status)}>
+              <Popup>
+                <span style={{ fontFamily: 'Share Tech Mono', fontSize: 11, color: '#e2e8e8' }}>
+                  {s.signalId} <br />
+                  Status: <span style={{ color: s.status === 'green' ? '#10b981' : s.status === 'preparing' ? '#f59e0b' : '#6b7f7f' }}>
+                    {s.status?.toUpperCase()}
+                  </span><br />
+                  ETA: {s.etaMinutes?.toFixed(1)}min
+                </span>
+              </Popup>
+            </Marker>
+          )
+        })}
       </MapContainer>
 
       {sectorLabel && (

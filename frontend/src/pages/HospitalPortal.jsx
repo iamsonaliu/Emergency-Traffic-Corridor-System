@@ -1,26 +1,57 @@
 import { useState, useEffect } from 'react'
 import { useSocket, useSocketEvent, getSocket } from '../services/socket'
+import { getHospital, getIncomingRequests, respondToRequest } from '../services/api'
+import MapView from '../components/MapView'
 import { LiveDot } from '../components/LiveDot'
 
-const DEPARTMENTS_DATA = [
-  { id: 'DEPT_01', name: 'EMERGENCY', current: 12, max: 20, color: '#3b82f6', label: 'ADJUST ALLOCATION' },
-  { id: 'DEPT_02', name: 'CARDIAC', current: 5, max: 12, color: '#f59e0b', label: 'BED CONTROLS' },
-  { id: 'DEPT_03', name: 'ICU', current: 8, max: 10, color: '#ef4444', label: 'CRITICAL STATUS', icon: '🩺' },
-  { id: 'DEPT_04', name: 'TRAUMA', current: 14, max: 15, color: '#4DEEEA', label: 'BED CONTROLS' },
-  { id: 'DEPT_05', name: 'BURNS', current: 2, max: 8, color: '#f97316', label: 'BED CONTROLS' },
-]
-
 export default function HospitalPortal() {
-  const [incoming, setIncoming] = useState([
-    { id: 'AMB-04', emergencyId: 'EMG-PRE-01', type: 'CARDIAC', patient: 'MALE, 54', vitals: 'UNSTABLE', eta: '7:00', distance: '2.4 KM', color: '#ef4444', icon: '✱' }
-  ])
-  const [confirmed, setConfirmed] = useState([
-    { id: 'AMB-09', type: 'RESPIRATORY', eta: '0:45', bay: 'BAY_03' }
-  ])
-  const [departments, setDepartments] = useState(DEPARTMENTS_DATA)
+  const [hospitalData, setHospitalData] = useState(null)
+  const [incoming, setIncoming] = useState([])
+  const [confirmed, setConfirmed] = useState([])
+  const [departments, setDepartments] = useState([])
 
-  // Join 'hospital' room
-  const { connected } = useSocket('hospital', 'AIIMS') // Hardcoded ID for demo
+  // Join 'hospital' room - we'll use the first hospital from the database
+  const { connected } = useSocket('hospital', 'HOSP_DOON') // Default to Doon Government Hospital
+
+  useEffect(() => {
+    if (connected) {
+      loadHospitalData()
+    }
+  }, [connected])
+
+  const loadHospitalData = async () => {
+    try {
+      const hospital = await getHospital('HOSP_DOON')
+      setHospitalData(hospital)
+
+      // Set up departments based on hospital specialties
+      const deptData = hospital.specialties.map((specialty, index) => ({
+        id: `DEPT_${String(index + 1).padStart(2, '0')}`,
+        name: specialty.toUpperCase(),
+        current: Math.floor(Math.random() * 10) + 5, // Mock current patients
+        max: Math.floor(Math.random() * 15) + 10, // Mock max capacity
+        color: ['#3b82f6', '#f59e0b', '#ef4444', '#4DEEEA'][index % 4],
+        label: 'BED CONTROLS'
+      }))
+      setDepartments(deptData)
+
+      // Load incoming requests
+      const requests = await getIncomingRequests('HOSP_DOON')
+      setIncoming(requests.map(req => ({
+        id: req.ambulanceId,
+        emergencyId: req.emergencyId,
+        type: req.emergencyType?.toUpperCase() || 'GENERAL',
+        patient: 'UNKNOWN',
+        vitals: 'UNKNOWN',
+        eta: `${Math.floor(req.eta / 60)}:${String(req.eta % 60).padStart(2, '0')}`,
+        distance: `${req.distanceRemaining?.toFixed(1) || 0} KM`,
+        color: '#f59e0b',
+        icon: '⚠'
+      })))
+    } catch (error) {
+      console.error('Error loading hospital data:', error)
+    }
+  }
 
   useSocketEvent('emergency_dispatched', (data) => {
     // New emergency broadcasted
@@ -52,27 +83,39 @@ export default function HospitalPortal() {
     }
   })
 
-  const respond = (ambulanceId, emergencyId, action) => {
+  const respond = async (ambulanceId, emergencyId, action) => {
     if (!connected) return alert("Socket disconnected")
-    
-    // Emit the hospital_response up to socketHandler
-    getSocket().emit('hospital_response', {
-      hospitalId: 'AIIMS', // Hardcoded for demo
-      ambulanceId,
-      emergencyId,
-      action
-    })
 
-    // Optimistically update
-    if (action === 'reject') {
-       setIncoming(prev => prev.filter(x => x.id !== ambulanceId))
-    } else {
-       // We can also optimistically decrement a bed
-       setDepartments(prev => {
-          const np = [...prev]
-          np[0].current = Math.min(np[0].max, np[0].current + 1)
-          return np
-       })
+    try {
+      await respondToRequest('HOSP_DOON', action, emergencyId)
+
+      // Emit the hospital_response up to socketHandler
+      getSocket().emit('hospital_response', {
+        hospitalId: 'HOSP_DOON',
+        ambulanceId,
+        emergencyId,
+        action
+      })
+
+      // Optimistically update
+      if (action === 'reject') {
+         setIncoming(prev => prev.filter(x => x.id !== ambulanceId))
+      } else {
+         // Move to confirmed
+         const itm = incoming.find(x => x.id === ambulanceId)
+         if (itm) {
+           setIncoming(prev => prev.filter(x => x.id !== ambulanceId))
+           setConfirmed(prev => [{
+             id: ambulanceId,
+             type: itm.type,
+             eta: itm.eta,
+             bay: `BAY_0${Math.floor(Math.random()*4)+1}`
+           }, ...prev])
+         }
+      }
+    } catch (error) {
+      console.error('Error responding to request:', error)
+      alert('Failed to respond to ambulance request')
     }
   }
 
@@ -94,16 +137,21 @@ export default function HospitalPortal() {
         {/* Hospital Header */}
         <div className="p-6 bg-[#161b1b] border-b border-[#1f2b2b] flex justify-between items-start">
           <div>
-            <h1 className="text-[#e2e8e8] font-display font-bold text-lg mb-2">City General Hospital — Emergency Bay</h1>
+            <h1 className="text-[#e2e8e8] font-display font-bold text-lg mb-2">
+              {hospitalData?.name || 'Loading Hospital...'} — Emergency Bay
+            </h1>
             <div className="flex gap-4 font-mono text-[10px] tracking-widest text-[#6b7f7f] uppercase">
                <span>STATUS: {connected ? <span className="text-[#10b981]">CONNECTED</span> : <span className="text-[#ef4444]">OFFLINE</span>}</span>
                <span>|</span>
-               <span>SECTOR: <span className="text-[#e2e8e8]">NORTH-WEST</span></span>
+               <span>SECTOR: <span className="text-[#e2e8e8]">DEHRADUN</span></span>
             </div>
           </div>
           <div className="text-right">
-            <div className="font-mono text-[9px] text-[#6b7f7f] uppercase tracking-widest mb-1">BAY OCCUPANCY</div>
-            <div className="font-display font-bold text-2xl text-[#4DEEEA]">BEDS:<br/>{departments[0].current}/{departments[0].max}</div>
+            <div className="font-mono text-[9px] text-[#6b7f7f] uppercase tracking-widest mb-1">EMERGENCY BEDS</div>
+            <div className="font-display font-bold text-2xl text-[#4DEEEA]">
+              BEDS:<br/>
+              {hospitalData ? `${hospitalData.emergencyBeds.available}/${hospitalData.emergencyBeds.total}` : '0/0'}
+            </div>
           </div>
         </div>
 
@@ -177,6 +225,16 @@ export default function HospitalPortal() {
 
       {/* Right Column - Capacity Stack */}
       <div className="flex-1 flex flex-col bg-[#0a0c0c]">
+
+        <div className="h-72 border-b border-[#1f2b2b]">
+          <MapView
+            center={[30.3165, 78.0322]}
+            zoom={13}
+            ambulances={[]}
+            hospitalCandidates={hospitalData ? [hospitalData] : []}
+            signals={[]}
+          />
+        </div>
         
         <div className="px-8 py-6 flex justify-between items-center shrink-0">
           <h2 className="font-display font-bold text-lg text-[#e2e8e8] tracking-[0.2em]">DEPARTMENTAL CAPACITY</h2>

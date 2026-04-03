@@ -1,0 +1,154 @@
+[
+  {
+    "ambulanceId": "AMB-DDN-001",
+    "driverName": "Rajesh Kumar",
+    "contactNumber": "+91-9876543210",
+    "vehicleNumber": "UK-07-AB-1234",
+    "status": "idle",
+    "lastKnownGps": {
+      "lat": 30.3165,
+      "lng": 78.0322,
+      "accuracy": 5,
+      "heading": 0,
+      "speed": 0,
+      "timestamp": "2024-01-15T10:00:00Z"
+    },
+    "activeSession": null,
+    "gpsHistory": [],
+    "registeredAt": "2024-01-01T00:00:00Z",
+    "lastSeenAt": "2024-01-15T10:00:00Z"
+  },
+  {
+    "ambulanceId": "AMB-DDN-002",
+    "driverName": "Priya Sharma",
+    "contactNumber": "+91-9876543211",
+    "vehicleNumber": "UK-07-CD-5678",
+    "status": "idle",
+    "lastKnownGps": {
+      "lat": 30.3250,
+      "lng": 78.0420,
+      "accuracy": 3,
+      "heading": 0,
+      "speed": 0,
+      "timestamp": "2024-01-15T09:30:00Z"
+    },
+    "activeSession": null,
+    "gpsHistory": [],
+    "registeredAt": "2024-01-01T00:00:00Z",
+    "lastSeenAt": "2024-01-15T09:30:00Z"
+  },
+  {
+    "ambulanceId": "AMB-DDN-003",
+    "driverName": "Amit Singh",
+    "contactNumber": "+91-9876543212",
+    "vehicleNumber": "UK-07-EF-9012",
+    "status": "idle",
+    "lastKnownGps": {
+      "lat": 30.2950,
+      "lng": 78.0150,
+      "accuracy": 4,
+      "heading": 0,
+      "speed": 0,
+      "timestamp": "2024-01-15T08:45:00Z"
+    },
+    "activeSession": null,
+    "gpsHistory": [],
+    "registeredAt": "2024-01-01T00:00:00Z",
+    "lastSeenAt": "2024-01-15T08:45:00Z"
+  },
+  {
+    "ambulanceId": "AMB-DDN-004",
+    "driverName": "Sunita Verma",
+    "contactNumber": "+91-9876543213",
+    "vehicleNumber": "UK-07-GH-3456",
+    "status": "idle",
+    "lastKnownGps": {
+      "lat": 30.3400,
+      "lng": 78.0550,
+      "accuracy": 6,
+      "heading": 0,
+      "speed": 0,
+      "timestamp": "2024-01-15T11:15:00Z"
+    },
+    "activeSession": null,
+    "gpsHistory": [],
+    "registeredAt": "2024-01-01T00:00:00Z",
+    "lastSeenAt": "2024-01-15T11:15:00Z"
+  },
+  {
+    "ambulanceId": "AMB-DDN-005",
+    "driverName": "Vikram Joshi",
+    "contactNumber": "+91-9876543214",
+    "vehicleNumber": "UK-07-IJ-7890",
+    "status": "maintenance",
+    "lastKnownGps": {
+      "lat": 30.3100,
+      "lng": 78.0250,
+      "accuracy": 2,
+      "heading": 0,
+      "speed": 0,
+      "timestamp": "2024-01-14T16:00:00Z"
+    },
+    "activeSession": null,
+    "gpsHistory": [],
+    "registeredAt": "2024-01-01T00:00:00Z",
+    "lastSeenAt": "2024-01-14T16:00:00Z"
+  },
+  {
+    "ambulanceId": "AMB-DDN-006",
+    "driverName": "Meera Patel",
+    "contactNumber": "+91-9876543215",
+    "vehicleNumber": "UK-07-KL-1234",
+    "status": "idle",
+    "lastKnownGps": {
+      "lat": 30.2800,
+      "lng": 78.0450,
+      "accuracy": 5,
+      "heading": 0,
+      "speed": 0,
+      "timestamp": "2024-01-15T07:20:00Z"
+    },
+    "activeSession": null,
+    "gpsHistory": [],
+    "registeredAt": "2024-01-01T00:00:00Z",
+    "lastSeenAt": "2024-01-15T07:20:00Z"
+  },
+  {
+    "ambulanceId": "AMB-DDN-007",
+    "driverName": "Ravi Kumar",
+    "contactNumber": "+91-9876543216",
+    "vehicleNumber": "UK-07-MN-5678",
+    "status": "idle",
+    "lastKnownGps": {
+      "lat": 30.3500,
+      "lng": 78.0350,
+      "accuracy": 4,
+      "heading": 0,
+      "speed": 0,
+      "timestamp": "2024-01-15T12:00:00Z"
+    },
+    "activeSession": null,
+    "gpsHistory": [],
+    "registeredAt": "2024-01-01T00:00:00Z",
+    "lastSeenAt": "2024-01-15T12:00:00Z"
+  },
+  {
+    "ambulanceId": "AMB-DDN-008",
+    "driverName": "Kavita Rawat",
+    "contactNumber": "+91-9876543217",
+    "vehicleNumber": "UK-07-OP-9012",
+    "status": "idle",
+    "lastKnownGps": {
+      "lat": 30.3050,
+      "lng": 78.0500,
+      "accuracy": 3,
+      "heading": 0,
+      "speed": 0,
+      "timestamp": "2024-01-15T09:00:00Z"
+    },
+    "activeSession": null,
+    "gpsHistory": [],
+    "registeredAt": "2024-01-01T00:00:00Z",
+    "lastSeenAt": "2024-01-15T09:00:00Z"
+  }
+]

@@ -104,7 +104,7 @@ export default function TrafficDashboard() {
         </div>
 
         <MapView
-          center={[28.614, 77.213]}
+          center={[30.3165, 78.0322]}
           ambulancePos={ambulancePos}
           hospitalCandidates={[]}
           signals={signals}

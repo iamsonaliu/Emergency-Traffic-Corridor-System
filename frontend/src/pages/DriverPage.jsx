@@ -119,7 +119,7 @@ export default function DriverPage() {
         <div className="absolute bottom-0 w-full h-8 bg-gradient-to-t from-[#4DEEEA]/20 to-transparent z-[400] pointer-events-none" />
 
         <MapView
-          center={[28.614, 77.213]}
+          center={[30.3165, 78.0322]}
           ambulancePos={ambulancePos}
           hospitalCandidates={[]}
           signals={[]}

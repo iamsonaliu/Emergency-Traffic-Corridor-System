@@ -52,7 +52,60 @@ backend/
 
 ---
 
-## 📦 Core Entities (For MongoDB Schema Design)
+## �️ Database Setup
+
+### Prerequisites
+- MongoDB Atlas account or local MongoDB instance
+- Node.js installed
+
+### Environment Configuration
+Create a `.env` file in the `backend/` directory:
+
+```env
+PORT=5000
+MONGO_URI=mongodb+srv://username:password@cluster.mongodb.net/emergency_corridor
+CLIENT_ORIGIN=http://localhost:3000
+```
+
+### Seeding the Database
+
+The system includes mock data for Dehradun region with hospitals and ambulances.
+
+#### Available Commands:
+```bash
+# Seed all data (hospitals + ambulances)
+npm run seed
+
+# Seed only hospitals
+npm run seed:hospitals
+
+# Seed only ambulances
+npm run seed:ambulances
+
+# Verify database contents
+npm run verify
+```
+
+#### Current Seed Data:
+
+**🏥 Hospitals (4 locations in Dehradun):**
+- Doon Government Hospital
+- Max Super Speciality Hospital Dehradun
+- Shri Mahant Indiresh Hospital
+- Synergy Institute of Medical Sciences
+
+**🚑 Ambulances (8 vehicles):**
+- 7 idle ambulances positioned across Dehradun
+- 1 ambulance in maintenance
+- Realistic GPS coordinates and driver information
+
+#### Data Files:
+- `database/hospitalSeed.json` - Hospital data with coordinates
+- `database/ambulanceSeed.json` - Ambulance mock data
+
+---
+
+## �📦 Core Entities (For MongoDB Schema Design)
 
 ### 🚑 Ambulance
 
