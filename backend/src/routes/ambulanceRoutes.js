@@ -6,10 +6,18 @@ const {
   triggerFailover,
   endSession,
   getStatus,
+  getAllAmbulances,
+  getActiveEmergencies,
 } = require("../controllers/ambulanceController");
 
 // Emergency trigger
 router.post("/trigger", triggerEmergency);
+
+// Get all ambulances
+router.get("/", getAllAmbulances);
+
+// Get active emergencies (ambulances)
+router.get("/active", getActiveEmergencies);
 
 // Live GPS update
 router.post("/update-location", updateLocation);

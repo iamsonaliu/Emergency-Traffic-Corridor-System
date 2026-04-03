@@ -203,8 +203,8 @@ module.exports = function initSocketHandler(io) {
     socket.on("request_all_positions", async () => {
       try {
         const ambulances = await Ambulance.find(
-          { status: "active" },
-          "ambulanceId status lastKnownGps activeSession.routeId activeSession.eta"
+          {}, // include all ambulances so map initially shows seeded idle units
+          "ambulanceId status lastKnownGps activeSession.routeId activeSession.eta driverName"
         ).lean();
 
         socket.emit("all_positions", {
@@ -250,8 +250,8 @@ module.exports = function initSocketHandler(io) {
   setInterval(async () => {
     try {
       const active = await Ambulance.find(
-        { status: "active" },
-        "ambulanceId lastKnownGps activeSession.routeId activeSession.eta activeSession.currentSignalIndex"
+        {}, // broadcast all ambulances for visualization
+        "ambulanceId status lastKnownGps activeSession.routeId activeSession.eta activeSession.currentSignalIndex"
       ).lean();
 
       if (active.length > 0) {
