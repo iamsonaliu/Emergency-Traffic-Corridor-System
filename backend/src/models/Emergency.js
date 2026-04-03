@@ -135,7 +135,6 @@ const EmergencySchema = new mongoose.Schema(
 );
 
 // Indexes
-EmergencySchema.index({ emergencyId: 1 });
 EmergencySchema.index({ ambulanceId: 1, status: 1 });
 EmergencySchema.index({ triggeredAt: -1 });
 EmergencySchema.index({ "assignedHospital.hospitalId": 1 });

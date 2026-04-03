@@ -97,7 +97,6 @@ const HospitalSchema = new mongoose.Schema(
 
 // 2dsphere index for geospatial queries
 HospitalSchema.index({ location: "2dsphere" });
-HospitalSchema.index({ status: 1 });
 HospitalSchema.index({ "emergencyBeds.available": 1 });
 
 // Pre-save: keep status in sync with bed count

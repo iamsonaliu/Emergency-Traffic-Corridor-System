@@ -55,8 +55,7 @@ const CorridorSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-CorridorSchema.index({ routeId: 1 });
-CorridorSchema.index({ state: 1 });
+
 CorridorSchema.index({ startedAt: -1 });
 
 module.exports = mongoose.model("Corridor", CorridorSchema);

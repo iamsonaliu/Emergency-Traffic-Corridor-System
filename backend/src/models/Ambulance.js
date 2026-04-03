@@ -89,7 +89,6 @@ const AmbulanceSchema = new mongoose.Schema(
 );
 
 // Indexes
-AmbulanceSchema.index({ status: 1 });
 AmbulanceSchema.index({ "lastKnownGps.lat": 1, "lastKnownGps.lng": 1 });
 
 // Push GPS point to history (keep last 200)
