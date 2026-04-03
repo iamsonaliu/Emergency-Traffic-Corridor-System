@@ -1,183 +1,185 @@
 import { useState, useEffect } from 'react'
+import MapView from '../components/MapView'
+import { useSocket, useSocketEvent } from '../services/socket'
 
-// ---- Mock data -------------------------------------------------------
-const MOCK_EVENTS = [
-  { id: 'EVT-001', time: '15:12:44', type: 'EMERGENCY_TRIGGERED', unit: 'ALPHA-ONE', details: 'Cardiac arrest reported, Connaught Place', severity: 'critical' },
-  { id: 'EVT-002', time: '15:12:47', type: 'CORRIDOR_INITIATED',  unit: 'SYSTEM',   details: '6 signals selected for corridor',         severity: 'info' },
-  { id: 'EVT-003', time: '15:12:50', type: 'SIGNAL_CLEARED',      unit: 'SIG-N-001',details: 'Green phase extended to 60s',             severity: 'success' },
-  { id: 'EVT-004', time: '15:12:55', type: 'HOSPITAL_SELECTED',   unit: 'AIIMS',    details: 'ETA 7 min, 8 beds available',             severity: 'success' },
-  { id: 'EVT-005', time: '15:13:10', type: 'SIGNAL_CLEARED',      unit: 'SIG-S-002',details: 'Green phase extended to 60s',             severity: 'success' },
-  { id: 'EVT-006', time: '15:13:22', type: 'TELEMETRY_SYNC',      unit: 'SYSTEM',   details: 'All units GPS lock confirmed',            severity: 'info' },
-  { id: 'EVT-007', time: '15:14:00', type: 'AMBULANCE_UPDATE',    unit: 'ALPHA-ONE',details: 'Speed 68 km/h | 3.1 km remaining',       severity: 'info' },
-]
-
-const DAILY_STATS = [
-  { label: 'EMERGENCIES TODAY',  value: '12',    delta: '+3',  up: true  },
-  { label: 'AVG RESPONSE TIME',  value: '4.8m',  delta: '-0.6m', up: true },
-  { label: 'SIGNALS OVERRIDDEN', value: '84',    delta: '+11', up: false },
-  { label: 'LIVES ASSISTED',     value: '12',    delta: '+3',  up: true  },
-]
-
-const INTERSECTIONS = [
-  { id: 'SIG-N-001', name: 'Connaught Place N', activations: 8,  avgClear: '12s', violations: 0 },
-  { id: 'SIG-S-002', name: 'Safdarjung Flyover',activations: 5,  avgClear: '18s', violations: 1 },
-  { id: 'SIG-E-003', name: 'India Gate E',       activations: 3,  avgClear: '9s',  violations: 0 },
-  { id: 'SIG-W-004', name: 'Dhaula Kuan W',      activations: 2,  avgClear: '21s', violations: 0 },
-  { id: 'SIG-C-005', name: 'Rajpath Centre',     activations: 7,  avgClear: '11s', violations: 2 },
-  { id: 'SIG-R-006', name: 'Ring Road Jn.',      activations: 4,  avgClear: '14s', violations: 0 },
-]
-
-const sevColor = { critical: '#ef4444', info: '#6b7f7f', success: '#10b981', warning: '#f59e0b' }
-
-// ---- simple sparkline from random data --------------------------------
-function MiniSparkline({ color }) {
-  const pts = Array.from({ length: 12 }, (_, i) => 20 + Math.round(Math.sin(i * 0.7) * 8 + Math.random() * 6))
-  const max = Math.max(...pts), min = Math.min(...pts)
-  const W = 120, H = 28
-  const coords = pts
-    .map((v, i) => `${(i / (pts.length - 1)) * W},${H - ((v - min) / (max - min || 1)) * H}`)
-    .join(' ')
-  return (
-    <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="shrink-0">
-      <polyline fill="none" stroke={color} strokeWidth={1.5} points={coords} opacity={0.9} />
-    </svg>
-  )
-}
-
-// ---- Component -------------------------------------------------------
 export default function TrafficDashboard() {
-  const [logs, setLogs] = useState(MOCK_EVENTS)
-  const [filter, setFilter] = useState('ALL')
-  const [time, setTime] = useState(new Date().toLocaleTimeString('en-GB', { hour12: false }))
+  const [ambulancePos, setAmbulancePos] = useState([28.6139, 77.213])
+  const [targetAmbulance, setTargetAmbulance] = useState(null)
+  
+  const [activeCorridors, setActiveCorridors] = useState([
+    { id: 'NORTH_AVE_CORE', intersections: 7, active: true },
+  ])
 
-  useEffect(() => {
-    const id = setInterval(() => setTime(new Date().toLocaleTimeString('en-GB', { hour12: false })), 1000)
-    return () => clearInterval(id)
-  }, [])
+  // Mock static layout of city signals to visualize state changes
+  const [signals, setSignals] = useState([
+    { signalId: 'SIG_42_CENTRAL_PARK', location: {lat: 28.6145, lng: 77.2135}, status: 'normal' },
+    { signalId: 'SIG_43_NORTH_AVE', location: {lat: 28.6165, lng: 77.2140}, status: 'normal' },
+    { signalId: 'SIG_44_EAST_ROUTE', location: {lat: 28.6120, lng: 77.2160}, status: 'normal' },
+  ])
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      const now = new Date().toLocaleTimeString('en-GB', { hour12: false })
-      const msgs = [
-        { type: 'TELEMETRY_SYNC', unit: 'SYSTEM',    details: 'Heartbeat OK — all nodes responsive', severity: 'info' },
-        { type: 'SIGNAL_CLEARED', unit: `SIG-${Math.floor(Math.random()*6)+1}-00${Math.floor(Math.random()*9)}`, details: 'Phase extended', severity: 'success' },
-        { type: 'AMBULANCE_UPDATE', unit: 'ALPHA-ONE', details: `Speed ${50 + Math.floor(Math.random()*30)} km/h`, severity: 'info' },
-      ]
-      const pick = msgs[Math.floor(Math.random() * msgs.length)]
-      setLogs(prev => [{ id: `EVT-${Date.now()}`, time: now, ...pick }, ...prev.slice(0, 49)])
-    }, 5000)
-    return () => clearInterval(id)
-  }, [])
+  const [logs, setLogs] = useState([
+    { id: 1, time: new Date().toLocaleTimeString('en-GB',{hour12:false}), type: 'SYSTEM', msg: 'TRAFFIC DB INITIALIZED', color: '#e2e8e8' }
+  ])
 
-  const TYPES = ['ALL', 'EMERGENCY_TRIGGERED', 'CORRIDOR_INITIATED', 'SIGNAL_CLEARED', 'HOSPITAL_SELECTED', 'TELEMETRY_SYNC', 'AMBULANCE_UPDATE']
-  const filtered = filter === 'ALL' ? logs : logs.filter(l => l.type === filter)
+  const { connected } = useSocket('traffic', 'main')
+
+  const addLog = (msg, type='INFO', color='#6b7f7f') => {
+    setLogs(prev => {
+      const time = new Date().toLocaleTimeString('en-GB',{hour12:false})
+      return [{ id: Date.now()+Math.random(), time, type, msg, color }, ...prev].slice(0, 50)
+    })
+  }
+
+  useSocketEvent('corridors_sync', (data) => {
+    if (data.corridors) {
+      // transform backend corridors array if needed
+      setActiveCorridors(data.corridors.map(c => ({
+        id: c.routeId || c.id,
+        intersections: c.signalCount || 0,
+        active: true
+      })))
+      addLog(`ACTIVE CORRIDORS SYNCED: ${data.corridors.length}`, 'SYSTEM', '#e2e8e8')
+    }
+  })
+
+  // Specific Design Document Events
+  useSocketEvent('corridor-activated', (data) => {
+    setSignals(prev => prev.map(s => (data.signalIds && data.signalIds.includes(s.signalId)) ? { ...s, status: 'green' } : s))
+    addLog(`CORRIDOR [${data.corridorId}] FULLY ACTIVATED`, 'INFO', '#10b981')
+  })
+
+  useSocketEvent('corridor-deactivated', (data) => {
+    setSignals(prev => prev.map(s => (data.signalIds && data.signalIds.includes(s.signalId)) ? { ...s, status: 'normal' } : s))
+    addLog(`CORRIDOR [${data.corridorId}] DEACTIVATED. RESUMING NORMAL CYCLES.`, 'INFO', '#6b7f7f')
+  })
+
+  useSocketEvent('signal-override', (data) => {
+    setSignals(prev => prev.map(s => s.signalId === data.signalId ? { ...s, status: data.state === 'green' ? 'green' : 'red' } : s))
+    addLog(`MANUAL OVERRIDE: ${data.signalId} FORCED ${data.state.toUpperCase()}`, 'WARN', data.state === 'green' ? '#10b981' : '#ef4444')
+  })
+
+  useSocketEvent('ambulance_location_update', (data) => {
+    setAmbulancePos([data.lat, data.lng])
+    setTargetAmbulance({
+      id: data.ambulanceId,
+      lat: data.lat.toFixed(4),
+      lng: data.lng.toFixed(4),
+      speed: data.speed
+    })
+  })
+
+  const overrideSignal = async (state) => {
+    try {
+      // Minimal mock for the POST call / trigger local socket for immediate UI response
+      // await axios.post('/api/traffic/signal/override', { signalId: 'SIG_42_CENTRAL_PARK', state })
+      addLog(`SIGNAL_42 FORCED ${state.toUpperCase()} - MANUAL_USER_01`, 'WARN', state==='red'?'#ef4444':'#f59e0b')
+      setSignals(prev => prev.map(s => s.signalId === 'SIG_42_CENTRAL_PARK' ? { ...s, status: state === 'green' ? 'green' : 'red' } : s))
+    } catch(err) {
+      addLog(`OVERRIDE FAILED`, 'ALERT', '#ef4444')
+    }
+  }
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
-      {/* Top stats bar */}
-      <div className="shrink-0 grid grid-cols-4 divide-x divide-[#1f2b2b] border-b border-[#1f2b2b]" style={{ background: '#131616' }}>
-        {DAILY_STATS.map(({ label, value, delta, up }) => (
-          <div key={label} className="px-4 py-3 flex items-center justify-between">
-            <div>
-              <div className="font-mono text-[9px] text-[#374444] tracking-widest mb-0.5">{label}</div>
-              <div className="font-display font-bold text-2xl text-[#e2e8e8]">{value}</div>
-              <span className="font-mono text-[9px]" style={{ color: up ? '#10b981' : '#ef4444' }}>{delta} today</span>
-            </div>
-            <MiniSparkline color={up ? '#10b981' : '#f59e0b'} />
-          </div>
-        ))}
-      </div>
-
-      {/* Body: log + intersection table */}
-      <div className="flex-1 flex overflow-hidden">
-        {/* Event log */}
-        <div className="flex-1 flex flex-col overflow-hidden border-r border-[#1f2b2b]">
-          {/* Filter chips */}
-          <div className="shrink-0 px-3 py-2 border-b border-[#1f2b2b] flex gap-1.5 overflow-x-auto" style={{ background: '#131616' }}>
-            {TYPES.slice(0, 6).map(t => (
-              <button
-                key={t}
-                onClick={() => setFilter(t)}
-                className="font-mono text-[9px] tracking-widest px-2 py-0.5 whitespace-nowrap transition-all"
-                style={{
-                  background: filter === t ? '#065f46' : '#1a1e1e',
-                  color: filter === t ? '#10b981' : '#374444',
-                  border: `1px solid ${filter === t ? '#10b981' : '#1f2b2b'}`,
-                }}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex-1 overflow-y-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr style={{ background: '#0d0f0f' }}>
-                  {['TIME', 'TYPE', 'UNIT', 'DETAILS'].map(h => (
-                    <th key={h} className="font-mono text-[9px] text-[#374444] tracking-widest px-3 py-2 sticky top-0"
-                      style={{ background: '#0d0f0f', borderBottom: '1px solid #1f2b2b' }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.map((e, i) => (
-                  <tr key={e.id}
-                    className="hover:bg-[#1f2626] transition-colors"
-                    style={{ borderBottom: '1px solid #0d0f0f' }}
-                  >
-                    <td className="font-mono text-[10px] text-[#374444] px-3 py-1.5 whitespace-nowrap">{e.time}</td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">
-                      <span className="font-mono text-[9px] px-1.5 py-0.5 tracking-wider"
-                        style={{ color: sevColor[e.severity], background: sevColor[e.severity] + '18', border: `1px solid ${sevColor[e.severity]}44` }}>
-                        {e.type}
-                      </span>
-                    </td>
-                    <td className="font-mono text-[10px] text-[#10b981] px-3 py-1.5 whitespace-nowrap">{e.unit}</td>
-                    <td className="font-mono text-[10px] text-[#6b7f7f] px-3 py-1.5">{e.details}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Footer */}
-          <div className="shrink-0 px-4 py-2 border-t border-[#1f2b2b] flex items-center justify-between" style={{ background: '#131616' }}>
-            <span className="font-mono text-[9px] text-[#374444]">{filtered.length} EVENTS</span>
-            <span className="font-mono text-[9px] text-[#374444]">LAST SYNC {time}</span>
-          </div>
+    <div className="h-full flex overflow-hidden bg-[#0d0f0f]">
+      
+      {/* Map Area */}
+      <div className="flex-1 relative border-r border-[#1f2b2b]">
+        
+        {/* Top Left Target Vector Overlay */}
+        <div className="absolute top-8 left-8 z-[500] border border-[#1f2b2b] bg-[#161b1b]/90 p-4" style={{backdropFilter: 'blur(4px)'}}>
+           <div className="font-mono text-[9px] text-[#6b7f7f] tracking-widest mb-1 uppercase">TARGET VECTOR</div>
+           <div className="font-display font-bold text-2xl text-[#e2e8e8] tracking-[0.1em] mb-2">{targetAmbulance ? targetAmbulance.id : 'NO_TARGET_AQUIRED'}</div>
+           <div className="font-mono text-[10px] text-[#6b7f7f] tracking-widest">
+             LAT: {targetAmbulance ? targetAmbulance.lat : '--'} | LON: {targetAmbulance ? targetAmbulance.lng : '--'}
+           </div>
         </div>
 
-        {/* Intersection performance table */}
-        <div className="w-[300px] shrink-0 flex flex-col overflow-hidden">
-          <div className="px-4 py-3 border-b border-[#1f2b2b]" style={{ background: '#131616' }}>
-            <span className="font-mono text-[10px] text-[#374444] tracking-widest">INTERSECTION STATS</span>
+        {/* Bottom Right System Status Overlay */}
+        <div className="absolute bottom-12 right-8 z-[500] border border-[#f59e0b] bg-[#161b1b]/90 p-4 min-w-[240px] border-l-4" style={{backdropFilter: 'blur(4px)'}}>
+           <div className="font-mono text-[9px] text-[#f59e0b] tracking-widest mb-0.5 text-right uppercase">SYSTEM STATUS</div>
+           <div className="font-display font-bold text-2xl text-[#e2e8e8] tracking-[0.1em] text-right mb-2">
+             {connected ? 'OPTIMIZED_FLOW' : 'OFFLINE'}
+           </div>
+           <div className="font-mono text-[10px] text-[#6b7f7f] tracking-widest text-right">RESPONSE_TIME: <span className="text-[#e2e8e8]">-14.2%</span></div>
+        </div>
+
+        <MapView
+          center={[28.614, 77.213]}
+          ambulancePos={ambulancePos}
+          hospitalCandidates={[]}
+          signals={signals}
+        />
+        
+      </div>
+
+      {/* Right Sidebar - Traffic Controls */}
+      <aside className="w-[340px] xl:w-[420px] shrink-0 flex flex-col bg-[#131616]">
+        
+        {/* Active Corridors */}
+        <div className="flex flex-col p-6 border-b border-[#1f2b2b]">
+          <div className="flex justify-between items-center mb-6">
+            <h2 className="font-display font-bold text-sm tracking-widest text-[#e2e8e8] border-l-4 border-[#4DEEEA] pl-2">ACTIVE CORRIDORS</h2>
+            <span className="font-mono text-[9px] text-[#6b7f7f] uppercase tracking-widest">LIVE_DATA_STREAM</span>
           </div>
-          <div className="flex-1 overflow-y-auto">
-            {INTERSECTIONS.map((x, i) => (
-              <div key={x.id} className="px-4 py-3 border-b border-[#1f2b2b] hover:bg-[#1f2626] transition-colors">
-                <div className="flex items-center justify-between mb-1">
-                  <span className="font-mono text-[9px] text-[#374444]">{x.id}</span>
-                  {x.violations > 0 && (
-                    <span className="font-mono text-[9px] text-[#ef4444]">⚠ {x.violations}</span>
-                  )}
+
+          <div className="flex flex-col gap-4">
+            {activeCorridors.length === 0 && <div className="text-[#6b7f7f] font-mono text-[10px] italic">NO CORRIDORS ACTIVE</div>}
+            {activeCorridors.map((c, i) => (
+              <div key={i} className="flex justify-between items-center border-b border-[#1f2b2b] pb-4 last:border-0 last:pb-0">
+                <div>
+                  <div className="font-display font-bold text-[13px] text-[#e2e8e8] tracking-widest mb-1">{c.id}</div>
+                  <div className="font-mono text-[9px] text-[#6b7f7f]">{c.intersections} INTERSECTIONS ACTIVE</div>
                 </div>
-                <div className="font-display font-semibold text-[11px] text-[#e2e8e8] mb-1.5">{x.name}</div>
-                <div className="flex gap-4">
-                  <span className="font-mono text-[9px] text-[#6b7f7f]">ACT: <span className="text-[#10b981]">{x.activations}</span></span>
-                  <span className="font-mono text-[9px] text-[#6b7f7f]">AVG: <span className="text-[#e2e8e8]">{x.avgClear}</span></span>
-                </div>
-                {/* activation bar */}
-                <div className="mt-1.5 h-[2px] bg-[#1f2b2b]">
-                  <div className="h-full bg-[#10b981]" style={{ width: `${(x.activations / 10) * 100}%`, opacity: 0.7 }} />
+                <div className="flex items-center gap-3">
+                  <span className="font-mono text-[9px] uppercase tracking-widest" style={{color: c.active ? '#f59e0b' : '#6b7f7f'}}>
+                    {c.active ? 'ACTIVE' : 'IDLE'}
+                  </span>
+                  {/* Toggle Switch UI */}
+                  <div className="w-10 h-5 border border-[#1f2b2b] bg-[#1a1e1e] flex items-center p-0.5" style={{justifyContent: c.active ? 'flex-end' : 'flex-start', borderColor: c.active ? '#4DEEEA' : '#1f2b2b'}}>
+                     <div className="w-3.5 h-3.5" style={{backgroundColor: c.active ? '#4DEEEA' : '#374444'}} />
+                  </div>
                 </div>
               </div>
             ))}
           </div>
         </div>
-      </div>
+
+        {/* Manual Override Settings */}
+        <div className="flex flex-col p-6 border-b border-[#1f2b2b]">
+          <h2 className="font-display font-bold text-sm tracking-widest text-[#e2e8e8] border-l-4 border-[#f59e0b] pl-2 mb-6">MANUAL OVERRIDE</h2>
+          
+          <div className="font-mono text-[9px] text-[#6b7f7f] uppercase tracking-widest mb-2">SIGNAL_ID SELECTION</div>
+          <div className="border border-[#1f2b2b] bg-[#1a1e1e] p-3 flex justify-between items-center mb-6 cursor-pointer">
+             <span className="font-display font-semibold text-xs tracking-widest text-[#e2e8e8]">SIG_42_CENTRAL_PARK</span>
+             <span className="text-[#6b7f7f]">▼</span>
+          </div>
+
+          <div className="flex gap-4">
+             <button onClick={() => overrideSignal('green')} className="flex-1 border border-[#f59e0b]/30 bg-[#1a1e1e] text-[#f59e0b] font-display font-bold text-[11px] tracking-widest py-3 hover:bg-[#f59e0b]/10 transition-colors">
+               FORCE GREEN
+             </button>
+             <button onClick={() => overrideSignal('red')} className="flex-1 border border-[#ef4444]/30 bg-[#ef4444]/5 text-[#ef4444] font-display font-bold text-[11px] tracking-widest py-3 hover:bg-[#ef4444]/10 transition-colors">
+               FORCE RED
+             </button>
+          </div>
+        </div>
+
+        {/* System Log */}
+        <div className="flex flex-col p-6 flex-1 overflow-hidden">
+          <h2 className="font-display font-bold text-sm tracking-widest text-[#e2e8e8] border-l-4 border-[#6b7f7f] pl-2 mb-6">SYSTEM LOG</h2>
+          
+          <div className="flex-1 overflow-y-auto pr-2 flex flex-col gap-4 font-mono text-[10px] leading-relaxed">
+            {logs.map(l => (
+              <div key={l.id} className="flex gap-4">
+                <span className="text-[#374444] shrink-0 w-[50px]">{l.time}</span>
+                <span className="shrink-0 w-[45px]" style={{ color: l.color }}>{l.type}</span>
+                <span className="text-[#e2e8e8]" style={{color: l.type === 'ALERT' ? '#ef4444' : '#e2e8e8'}}>{l.msg}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+      </aside>
     </div>
   )
 }
