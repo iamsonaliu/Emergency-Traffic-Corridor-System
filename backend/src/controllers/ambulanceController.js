@@ -10,6 +10,20 @@ const {
   clearCorridor,
 } = require("../services/trafficService");
 const { logEvent } = require("../utils/auditLogger");
+// const Ambulance = require("../models/Ambulance");
+// const Hospital = require("../models/Hospital");
+// const Emergency = require("../models/Emergency");
+// const { selectBestHospital, failoverHospital } = require("../services/hospitalService");
+// const { computeRoute } = require("../services/osmRouteService");
+// const { rerouteAmbulance } = require("../services/routeService");
+// const {
+//   initCorridor,
+//   updateAmbulancePosition,
+//   rerouteCorridor,
+//   clearCorridor,
+// } = require("../services/trafficService");
+
+// const { logEvent } = require("../utils/auditLogger");
 
 // Generate unique emergency ID
 function generateEmergencyId() {
